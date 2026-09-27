@@ -6,27 +6,34 @@ from django.core.exceptions import ValidationError
 DRAWING_SOFT_POINT_MAX = Decimal("95")
 
 
-def assert_can_enter_drawing(hearth) -> None:
+def drawing_gate_error(hearth):
+    """出胶闸门判定：可进入出胶返回 None，否则返回阻止原因。
+
+    唯一口径（见 README）：进行中的 CookRun 必须至少有一条
+    softPointC ≤ DRAWING_SOFT_POINT_MAX 的 SoftPointProbe。
+    资格提示、相位切换、看板计数均以此为准。
+    """
     open_run = hearth.open_run()
     if open_run is None:
-        raise ValidationError(
-            {"phase": "无法进入出胶：该灶没有进行中的值守纪录。"}
-        )
+        return "该灶没有进行中的值守纪录"
 
-    probes = open_run.probes.all()
-    if not probes.exists():
-        return
+    if not open_run.probes.exists():
+        return f"尚无探针 — 出胶前须有 ≤{DRAWING_SOFT_POINT_MAX}℃ 记录"
 
-    ok = open_run.probes.filter(softPointC__gt=DRAWING_SOFT_POINT_MAX).exists()
-    if not ok:
-        raise ValidationError(
-            {
-                "phase": (
-                    "无法进入出胶：进行中值守尚无软化点探针 "
-                    f"> {DRAWING_SOFT_POINT_MAX}℃。"
-                )
-            }
-        )
+    if not open_run.probes.filter(softPointC__lte=DRAWING_SOFT_POINT_MAX).exists():
+        return f"探针读数均高于 {DRAWING_SOFT_POINT_MAX}℃，尚无合格记录"
+
+    return None
+
+
+def can_enter_drawing(hearth) -> bool:
+    return drawing_gate_error(hearth) is None
+
+
+def assert_can_enter_drawing(hearth) -> None:
+    error = drawing_gate_error(hearth)
+    if error is not None:
+        raise ValidationError(f"无法进入出胶：{error}。")
 
 
 def change_hearth_phase(hearth, new_phase: str):

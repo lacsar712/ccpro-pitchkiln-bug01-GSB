@@ -1,5 +1,3 @@
-from decimal import Decimal
-
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
@@ -12,6 +10,11 @@ from django.views.decorators.http import require_http_methods, require_POST
 
 from .forms import OpenCookRunForm, PhaseChangeForm, ResinLotForm, SoftPointProbeForm
 from .models import CookRun, FireHearth, ResinLot
+from .services.floor_rules import (
+    DRAWING_SOFT_POINT_MAX,
+    change_hearth_phase,
+    drawing_gate_error,
+)
 
 
 def _wants_htmx(request):
@@ -47,15 +50,10 @@ def _board_context():
 
 
 def _drawer_eligible_hint(hearth):
-    open_run = hearth.open_run()
-    if open_run is None:
-        return False, "无进行中值守"
-    probes = list(open_run.probes.all())
-    if not probes:
-        return True, "尚无探针 — 按目标软化点视为可出胶"
-    if open_run.targetSoftPointC is not None and open_run.targetSoftPointC <= Decimal("95"):
-        return True, f"目标软化点 {open_run.targetSoftPointC}℃ 已达标"
-    return False, "目标软化点未达出胶门槛"
+    error = drawing_gate_error(hearth)
+    if error is None:
+        return True, f"已有 ≤{DRAWING_SOFT_POINT_MAX}℃ 探针记录"
+    return False, error
 
 
 def _drawer_context(hearth):
@@ -73,6 +71,7 @@ def _drawer_context(hearth):
         "open_run_form": OpenCookRunForm(hearth=hearth) if open_run is None else None,
         "drawing_eligible": eligible,
         "drawing_eligible_hint": eligible_hint,
+        "soft_point_max": DRAWING_SOFT_POINT_MAX,
     }
 
 
@@ -94,7 +93,9 @@ def home(request):
 
 @login_required
 def floor_grid_partial(request):
-    html = render_to_string("floor/_grid.html", _board_context(), request=request)
+    ctx = _board_context()
+    ctx["oob_legend"] = True
+    html = render_to_string("floor/_grid.html", ctx, request=request)
     return HttpResponse(html)
 
 
@@ -111,26 +112,14 @@ def hearth_drawer(request, pk):
 @require_POST
 def change_phase(request, pk):
     hearth = get_object_or_404(FireHearth, pk=pk)
-    form = PhaseChangeForm(request.POST, hearth=None)
+    form = PhaseChangeForm(request.POST, hearth=hearth)
     if form.is_valid():
         new_phase = form.cleaned_data["phase"]
-        if new_phase == FireHearth.PHASE_DRAWING:
-            open_run = hearth.open_run()
-            allowed = False
-            if open_run is not None:
-                if open_run.probes.exists():
-                    allowed = True
-                elif open_run.targetSoftPointC is not None:
-                    allowed = open_run.targetSoftPointC <= Decimal("95")
-            if not allowed:
-                messages.error(request, "无法进入出胶：缺少探针或目标软化点不合格")
-            else:
-                hearth.phase = new_phase
-                hearth.save(update_fields=["phase"])
-                messages.success(request, f"灶牌 {hearth.tag} 相位已更新")
+        try:
+            change_hearth_phase(hearth, new_phase)
+        except ValidationError as exc:
+            messages.error(request, exc.messages[0] if exc.messages else "相位切换失败")
         else:
-            hearth.phase = new_phase
-            hearth.save(update_fields=["phase"])
             messages.success(request, f"灶牌 {hearth.tag} 相位已更新")
     else:
         err = form.errors.get("phase")

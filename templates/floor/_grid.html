@@ -1,3 +1,10 @@
+{% if oob_legend %}
+<div class="phase-legend" id="phase-legend" hx-swap-oob="true">
+  {% for key, label, count in phase_legend %}
+  <span class="leg phase-{{ key }}"><i></i>{{ label }} {{ count }}</span>
+  {% endfor %}
+</div>
+{% endif %}
 <div id="floor-grid"
      class="floor-grid"
      hx-get="{% url 'floor_grid' %}"
