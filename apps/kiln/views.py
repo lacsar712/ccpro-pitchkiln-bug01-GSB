@@ -1,5 +1,3 @@
-from decimal import Decimal
-
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
@@ -12,6 +10,7 @@ from django.views.decorators.http import require_http_methods, require_POST
 
 from .forms import OpenCookRunForm, PhaseChangeForm, ResinLotForm, SoftPointProbeForm
 from .models import CookRun, FireHearth, ResinLot
+from .services.floor_rules import drawing_eligibility
 
 
 def _wants_htmx(request):
@@ -47,15 +46,7 @@ def _board_context():
 
 
 def _drawer_eligible_hint(hearth):
-    open_run = hearth.open_run()
-    if open_run is None:
-        return False, "无进行中值守"
-    probes = list(open_run.probes.all())
-    if not probes:
-        return True, "尚无探针 — 按目标软化点视为可出胶"
-    if open_run.targetSoftPointC is not None and open_run.targetSoftPointC <= Decimal("95"):
-        return True, f"目标软化点 {open_run.targetSoftPointC}℃ 已达标"
-    return False, "目标软化点未达出胶门槛"
+    return drawing_eligibility(hearth)
 
 
 def _drawer_context(hearth):
@@ -111,27 +102,11 @@ def hearth_drawer(request, pk):
 @require_POST
 def change_phase(request, pk):
     hearth = get_object_or_404(FireHearth, pk=pk)
-    form = PhaseChangeForm(request.POST, hearth=None)
+    form = PhaseChangeForm(request.POST, hearth=hearth)
     if form.is_valid():
-        new_phase = form.cleaned_data["phase"]
-        if new_phase == FireHearth.PHASE_DRAWING:
-            open_run = hearth.open_run()
-            allowed = False
-            if open_run is not None:
-                if open_run.probes.exists():
-                    allowed = True
-                elif open_run.targetSoftPointC is not None:
-                    allowed = open_run.targetSoftPointC <= Decimal("95")
-            if not allowed:
-                messages.error(request, "无法进入出胶：缺少探针或目标软化点不合格")
-            else:
-                hearth.phase = new_phase
-                hearth.save(update_fields=["phase"])
-                messages.success(request, f"灶牌 {hearth.tag} 相位已更新")
-        else:
-            hearth.phase = new_phase
-            hearth.save(update_fields=["phase"])
-            messages.success(request, f"灶牌 {hearth.tag} 相位已更新")
+        hearth.phase = form.cleaned_data["phase"]
+        hearth.save(update_fields=["phase"])
+        messages.success(request, f"灶牌 {hearth.tag} 相位已更新")
     else:
         err = form.errors.get("phase")
         messages.error(request, err[0] if err else "相位切换失败")
